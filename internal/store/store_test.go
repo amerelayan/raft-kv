@@ -8,9 +8,14 @@ import (
 func TestPutAndGet(t *testing.T) {
 	s := New()
 
-	s.Put("foo", "bar")
+	if err := s.Put("foo", "bar"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
-	value, ok := s.Get("foo")
+	value, ok, err := s.Get("foo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if !ok {
 		t.Fatalf("expected key %q to exist", "foo")
 	}
@@ -22,7 +27,10 @@ func TestPutAndGet(t *testing.T) {
 func TestGetMissingKey(t *testing.T) {
 	s := New()
 
-	_, ok := s.Get("missing")
+	_, ok, err := s.Get("missing")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if ok {
 		t.Fatalf("expected key %q to not exist", "missing")
 	}
@@ -34,7 +42,10 @@ func TestPutOverwritesExistingKey(t *testing.T) {
 	s.Put("foo", "bar")
 	s.Put("foo", "baz")
 
-	value, ok := s.Get("foo")
+	value, ok, err := s.Get("foo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if !ok {
 		t.Fatalf("expected key %q to exist", "foo")
 	}
@@ -47,9 +58,11 @@ func TestDelete(t *testing.T) {
 	s := New()
 
 	s.Put("foo", "bar")
-	s.Delete("foo")
+	if err := s.Delete("foo"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
-	_, ok := s.Get("foo")
+	_, ok, _ := s.Get("foo")
 	if ok {
 		t.Fatalf("expected key %q to be deleted", "foo")
 	}
@@ -58,7 +71,9 @@ func TestDelete(t *testing.T) {
 func TestDeleteMissingKeyIsNoOp(t *testing.T) {
 	s := New()
 
-	s.Delete("missing") // should not panic
+	if err := s.Delete("missing"); err != nil { // should not panic or error
+		t.Fatalf("unexpected error: %v", err)
+	}
 }
 
 func TestConcurrentAccess(t *testing.T) {

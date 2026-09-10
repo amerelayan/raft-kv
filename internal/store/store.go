@@ -16,24 +16,32 @@ func New() *Store {
 	}
 }
 
-// Put sets the value for a key, creating or overwriting it.
-func (s *Store) Put(key, value string) {
+// Put sets the value for a key, creating or overwriting it. The error
+// return exists to satisfy server.KV: a local, single-node store cannot
+// fail a write, so it is always nil here. A future Raft-backed
+// implementation of the same interface can fail a write (not leader,
+// proposal timeout, no quorum) without changing this signature.
+func (s *Store) Put(key, value string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.data[key] = value
+	return nil
 }
 
-// Get returns the value for a key and whether it was found.
-func (s *Store) Get(key string) (string, bool) {
+// Get returns the value for a key and whether it was found. The error
+// return exists to satisfy server.KV; see Put for why.
+func (s *Store) Get(key string) (string, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	value, ok := s.data[key]
-	return value, ok
+	return value, ok, nil
 }
 
-// Delete removes a key. It is a no-op if the key does not exist.
-func (s *Store) Delete(key string) {
+// Delete removes a key. It is a no-op if the key does not exist. The
+// error return exists to satisfy server.KV; see Put for why.
+func (s *Store) Delete(key string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.data, key)
+	return nil
 }
