@@ -97,3 +97,67 @@ func leaders(nodes []*Node) []*Node {
 	}
 	return out
 }
+
+// waitForLeader polls until exactly one node in nodes reports itself as
+// Leader, failing the test if that never happens within a generous
+// bound.
+func waitForLeader(t *testing.T, nodes []*Node) *Node {
+	t.Helper()
+	var leader *Node
+	eventually(t, 2*time.Second, 5*time.Millisecond, func() bool {
+		ls := leaders(nodes)
+		if len(ls) == 1 {
+			leader = ls[0]
+			return true
+		}
+		return false
+	})
+	return leader
+}
+
+// collectApplied reads exactly count entries from n's apply channel,
+// failing the test if they don't all arrive within timeout.
+func collectApplied(t *testing.T, n *Node, count int, timeout time.Duration) []AppliedEntry {
+	t.Helper()
+	out := make([]AppliedEntry, 0, count)
+	deadline := time.After(timeout)
+	for len(out) < count {
+		select {
+		case e := <-n.ApplyChannel():
+			out = append(out, e)
+		case <-deadline:
+			t.Fatalf("timed out waiting for %d applied entries, got %d", count, len(out))
+		}
+	}
+	return out
+}
+
+// logsEqual reports whether a and b have identical entries (including
+// the index-0 sentinel).
+func logsEqual(a, b []LogEntry) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Index != b[i].Index || a[i].Term != b[i].Term || string(a[i].Command) != string(b[i].Command) {
+			return false
+		}
+	}
+	return true
+}
+
+// nextIndexFor reads a leader's current nextIndex for peer under its own
+// lock. White-box access, for tests only.
+func nextIndexFor(n *Node, peer string) uint64 {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.nextIndex[peer]
+}
+
+// matchIndexFor reads a leader's current matchIndex for peer under its
+// own lock. White-box access, for tests only.
+func matchIndexFor(n *Node, peer string) uint64 {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.matchIndex[peer]
+}

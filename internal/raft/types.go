@@ -22,10 +22,7 @@ func (r Role) String() string {
 	}
 }
 
-// LogEntry is a placeholder for Stage 4 (log replication). It is defined
-// now, alongside the RPC fields that reference it, so the AppendEntries
-// wire format does not need to change when log replication is added.
-// This stage never populates a LogEntry or sends one over the wire.
+// LogEntry is one entry in a Node's replicated log.
 type LogEntry struct {
 	Term    uint64
 	Index   uint64
@@ -37,10 +34,9 @@ type RequestVoteArgs struct {
 	Term        uint64
 	CandidateID string
 
-	// LastLogIndex and LastLogTerm are reserved for Stage 4's election
-	// restriction (a candidate must have a log at least as up to date as
-	// the voter's log, per the Raft paper §5.4.1). Unused and always
-	// zero until log replication exists.
+	// LastLogIndex and LastLogTerm implement the Raft paper §5.4.1
+	// election restriction: a candidate may only receive a vote if its
+	// log is at least as up to date as the voter's own log.
 	LastLogIndex uint64
 	LastLogTerm  uint64
 }
@@ -51,18 +47,20 @@ type RequestVoteReply struct {
 	VoteGranted bool
 }
 
-// AppendEntriesArgs is the AppendEntries RPC request. This stage only
-// ever sends the heartbeat form of this RPC: Entries is always empty and
-// the log-related fields are always zero.
+// AppendEntriesArgs is the AppendEntries RPC request. Entries is empty
+// for a pure heartbeat and non-empty when the leader is replicating log
+// entries; both cases go through the same consistency check.
 type AppendEntriesArgs struct {
 	Term     uint64
 	LeaderID string
 
-	// PrevLogIndex, PrevLogTerm, Entries, and LeaderCommit are reserved
-	// for Stage 4 log replication.
+	// PrevLogIndex/PrevLogTerm identify the entry immediately before
+	// Entries in the leader's log, for the receiver's consistency check.
 	PrevLogIndex uint64
 	PrevLogTerm  uint64
 	Entries      []LogEntry
+	// LeaderCommit is the leader's commitIndex, letting the follower
+	// advance its own.
 	LeaderCommit uint64
 }
 
@@ -72,12 +70,24 @@ type AppendEntriesReply struct {
 	Success bool
 }
 
+// AppliedEntry is delivered on a Node's apply channel once its command's
+// index is known to be committed by a majority and has been applied, in
+// order, after every lower index. A future state machine (e.g. the KV
+// store) will read this channel to apply commands; nothing reads it yet.
+type AppliedEntry struct {
+	Index   uint64
+	Term    uint64
+	Command []byte
+}
+
 // State is a point-in-time snapshot of a Node, for observability and
 // tests.
 type State struct {
-	ID       string
-	Term     uint64
-	Role     Role
-	LeaderID string
-	VotedFor string
+	ID          string
+	Term        uint64
+	Role        Role
+	LeaderID    string
+	VotedFor    string
+	CommitIndex uint64
+	LastApplied uint64
 }
