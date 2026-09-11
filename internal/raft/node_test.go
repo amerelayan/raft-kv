@@ -135,7 +135,7 @@ func TestOldLeaderStepsDownOnStaleTerm(t *testing.T) {
 
 func TestHandleRequestVoteRejectsStaleTerm(t *testing.T) {
 	network := NewNetwork()
-	n := NewNode(Config{ID: "a", Peers: []string{"b"}, Transport: NewFakeTransport(network, "a")})
+	n := mustNewNode(t, Config{ID: "a", Peers: []string{"b"}, Transport: NewFakeTransport(network, "a")})
 	network.Register("a", n)
 
 	// Advance the node to term 5 the same way it would happen normally:
@@ -159,7 +159,7 @@ func TestHandleRequestVoteRejectsStaleTerm(t *testing.T) {
 
 func TestHandleAppendEntriesRejectsStaleTerm(t *testing.T) {
 	network := NewNetwork()
-	n := NewNode(Config{ID: "a", Peers: []string{"b"}, Transport: NewFakeTransport(network, "a")})
+	n := mustNewNode(t, Config{ID: "a", Peers: []string{"b"}, Transport: NewFakeTransport(network, "a")})
 	network.Register("a", n)
 
 	n.HandleRequestVote(&RequestVoteArgs{Term: 5, CandidateID: "b"}) // bumps term to 5, votes for b
@@ -178,7 +178,7 @@ func TestHandleAppendEntriesRejectsStaleTerm(t *testing.T) {
 
 func TestHandleRequestVoteGrantsOncePerTerm(t *testing.T) {
 	network := NewNetwork()
-	n := NewNode(Config{ID: "a", Peers: []string{"b", "c"}, Transport: NewFakeTransport(network, "a")})
+	n := mustNewNode(t, Config{ID: "a", Peers: []string{"b", "c"}, Transport: NewFakeTransport(network, "a")})
 	network.Register("a", n)
 
 	r1 := n.HandleRequestVote(&RequestVoteArgs{Term: 1, CandidateID: "b"})
@@ -260,7 +260,7 @@ func TestCandidateStepsDownOnSameTermAppendEntries(t *testing.T) {
 	// startElection can never actually win, guaranteeing it stays a
 	// Candidate deterministically (no timing dependency) until something
 	// else changes its role.
-	n := NewNode(Config{ID: "a", Peers: []string{"b"}, Transport: NewFakeTransport(network, "a")})
+	n := mustNewNode(t, Config{ID: "a", Peers: []string{"b"}, Transport: NewFakeTransport(network, "a")})
 	network.Register("a", n)
 
 	n.startElection()
@@ -291,7 +291,7 @@ func TestCandidateStepsDownOnSameTermAppendEntries(t *testing.T) {
 
 func TestSameTermStepDownPreservesVotedFor(t *testing.T) {
 	network := NewNetwork()
-	n := NewNode(Config{ID: "a", Peers: []string{"b"}, Transport: NewFakeTransport(network, "a")})
+	n := mustNewNode(t, Config{ID: "a", Peers: []string{"b"}, Transport: NewFakeTransport(network, "a")})
 	network.Register("a", n)
 
 	n.startElection() // votes for itself ("a") at term 1

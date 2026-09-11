@@ -27,6 +27,20 @@ type testNode struct {
 	kv   *RaftKV
 }
 
+// mustNewRaftNode calls raft.NewNode and fails the test if it returns an
+// error. raft.NewNode only fails when Persister.LoadState fails, which
+// the default NoopPersister (used by nearly every test here) never
+// does — so this just removes the same boilerplate error check from
+// every call site.
+func mustNewRaftNode(t *testing.T, cfg raft.Config) *raft.Node {
+	t.Helper()
+	n, err := raft.NewNode(cfg)
+	if err != nil {
+		t.Fatalf("raft.NewNode: %v", err)
+	}
+	return n
+}
+
 // newTestCluster creates n Raft nodes, each with its own RaftKV and
 // backing store.Store, wired together over a shared in-memory Network.
 // It does not start anything — call startAll once ready.
@@ -48,7 +62,7 @@ func newTestCluster(t *testing.T, n int) ([]*testNode, *raft.Network) {
 			}
 		}
 		transport := raft.NewFakeTransport(network, id)
-		rn := raft.NewNode(raft.Config{
+		rn := mustNewRaftNode(t, raft.Config{
 			ID:                 id,
 			Peers:              peers,
 			Transport:          transport,

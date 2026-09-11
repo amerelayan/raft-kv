@@ -306,7 +306,7 @@ func TestConcurrentClientWritesCommitAndApplyCorrectly(t *testing.T) {
 func TestEveryCommittedCommandAppliedOncePerNode(t *testing.T) {
 	network := raft.NewNetwork()
 	const id = "solo"
-	rn := raft.NewNode(raft.Config{
+	rn := mustNewRaftNode(t, raft.Config{
 		ID:                 id,
 		Transport:          raft.NewFakeTransport(network, id),
 		ElectionTimeoutMin: testElectionTimeoutMin,

@@ -1,13 +1,18 @@
 // Package raft implements Raft consensus: follower, candidate, and
 // leader roles, randomized-timeout leader election, term handling,
-// heartbeats, and replicated-log AppendEntries with majority-based
-// commit. It does not implement client write routing, snapshots, log
-// compaction, membership changes, or durable persistence — those are
-// later stages.
+// heartbeats, replicated-log AppendEntries with majority-based commit,
+// and durable persistence of currentTerm/votedFor/log via the Persister
+// interface (see FilePersister for a real, file-backed implementation).
+// A Node that fails to durably persist a required state change
+// fail-stops permanently (see Node's doc comment) rather than continue
+// operating on state that was never actually saved. It does not
+// implement client write routing, snapshots, log compaction, or dynamic
+// membership — those are later stages.
 package raft
 
 import (
 	"context"
+	"fmt"
 	"hash/fnv"
 	"math/rand"
 	"sync"
@@ -42,6 +47,22 @@ type Config struct {
 }
 
 // Node is a single participant in a Raft cluster.
+//
+// Fail-stop on persistence failure: every required durable state change
+// (a term increment, a vote, a log append, a log truncation) is saved
+// via Persister.SaveState before this Node treats that change as safe to
+// act on externally. If a save ever fails, this Node instance is
+// permanently marked persistence-failed (see State.PersistenceError) and
+// stops participating in anything safety-sensitive for the rest of its
+// life: it will not start or continue campaigning, grant votes, report
+// AppendEntries success, accept new proposals, or continue leader
+// replication. The already-mutated in-memory state from the failed
+// operation is deliberately left as-is (not rolled back) — since the
+// node can never again report success to anyone based on any state, a
+// stale or half-applied in-memory value is harmless. Recovery is by
+// construction: build a new Node (typically after fixing whatever made
+// the underlying storage fail), which reloads the last state that was
+// actually saved successfully.
 type Node struct {
 	id        string
 	peers     []string
@@ -63,6 +84,12 @@ type Node struct {
 	leaderID     string
 	leaderStopCh chan struct{}
 	stopped      bool
+
+	// persistFailed/persistErr implement the fail-stop behavior
+	// documented above. Set at most once, by persistStateLocked, and
+	// never cleared.
+	persistFailed bool
+	persistErr    error
 
 	// log[i].Index == i for every i; log[0] is a sentinel entry
 	// (Index 0, Term 0) representing "before the log begins". There is
@@ -102,7 +129,18 @@ const applyChannelBuffer = 64
 
 // NewNode creates a Node from cfg. Call Start to begin participating in
 // elections and applying committed entries.
-func NewNode(cfg Config) *Node {
+//
+// If cfg.Persister.LoadState fails, NewNode fails too, rather than
+// silently starting the node with empty state: a node that has actually
+// already voted in some term, or already holds committed log entries,
+// must never construct successfully believing it has voted for no one
+// and holds nothing — doing so could let it cast a second, conflicting
+// vote in a term it already voted in, or discard entries it must not
+// forget, both of which break Raft's safety guarantees. Corrupted or
+// unreadable durable state is a condition the caller must handle
+// explicitly (e.g. refuse to start the node), not one this constructor
+// can safely paper over.
+func NewNode(cfg Config) (*Node, error) {
 	if cfg.ElectionTimeoutMin == 0 {
 		cfg.ElectionTimeoutMin = 150 * time.Millisecond
 	}
@@ -138,15 +176,17 @@ func NewNode(cfg Config) *Node {
 		resetElectionCh:    make(chan struct{}, 1),
 	}
 
-	if term, votedFor, log, err := cfg.Persister.LoadState(); err == nil {
-		n.currentTerm = term
-		n.votedFor = votedFor
-		if len(log) > 0 {
-			n.log = log
-		}
+	term, votedFor, log, err := cfg.Persister.LoadState()
+	if err != nil {
+		return nil, fmt.Errorf("raft: load persisted state: %w", err)
+	}
+	n.currentTerm = term
+	n.votedFor = votedFor
+	if len(log) > 0 {
+		n.log = log
 	}
 
-	return n
+	return n, nil
 }
 
 func seedFor(id string) int64 {
@@ -164,13 +204,14 @@ func (n *Node) State() State {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	return State{
-		ID:          n.id,
-		Term:        n.currentTerm,
-		Role:        n.role,
-		LeaderID:    n.leaderID,
-		VotedFor:    n.votedFor,
-		CommitIndex: n.commitIndex,
-		LastApplied: n.lastApplied,
+		ID:               n.id,
+		Term:             n.currentTerm,
+		Role:             n.role,
+		LeaderID:         n.leaderID,
+		VotedFor:         n.votedFor,
+		CommitIndex:      n.commitIndex,
+		LastApplied:      n.lastApplied,
+		PersistenceError: n.persistErr,
 	}
 }
 
@@ -203,6 +244,10 @@ func (n *Node) Propose(command []byte) (index uint64, term uint64, isLeader bool
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
+	if !n.persistenceOKLocked() {
+		return 0, 0, false
+	}
+
 	if n.role != Leader {
 		return 0, 0, false
 	}
@@ -211,7 +256,14 @@ func (n *Node) Propose(command []byte) (index uint64, term uint64, isLeader bool
 	term = n.currentTerm
 	entry := LogEntry{Term: term, Index: index, Command: append([]byte(nil), command...)}
 	n.log = append(n.log, entry)
-	n.persistStateLocked()
+	if !n.persistStateLocked() {
+		// The new entry could not be durably saved. Do not report this
+		// as a successful proposal: the in-memory log now has a
+		// trailing entry nothing will ever act on again, since this
+		// node is now permanently fail-stopped (no further replication,
+		// no further commit advancement, no further leadership).
+		return 0, 0, false
+	}
 
 	// A single-node cluster (or one already at majority via matchIndex)
 	// can commit immediately; replicateToPeer's reply handler covers the
@@ -344,8 +396,38 @@ func (n *Node) maybeSignalApplyLocked() {
 	}
 }
 
-func (n *Node) persistStateLocked() {
-	_ = n.persister.SaveState(n.currentTerm, n.votedFor, n.log)
+// persistStateLocked saves currentTerm/votedFor/log and reports whether
+// the save succeeded. On failure it permanently fail-stops the node (see
+// failPersistenceLocked) before returning false. Callers must hold n.mu,
+// and must check the returned bool before treating whatever mutation
+// they just made as safe to report externally (grant a vote, report
+// AppendEntries success, report a Propose as accepted, become leader,
+// etc.) — see Node's doc comment.
+func (n *Node) persistStateLocked() bool {
+	if err := n.persister.SaveState(n.currentTerm, n.votedFor, n.log); err != nil {
+		n.failPersistenceLocked(err)
+		return false
+	}
+	return true
+}
+
+// persistenceOKLocked reports whether this node is still safe to
+// participate normally. Once a persistence failure has occurred it
+// always returns false, permanently, for the rest of this Node
+// instance's life. Callers must hold n.mu.
+func (n *Node) persistenceOKLocked() bool {
+	return !n.persistFailed
+}
+
+// failPersistenceLocked permanently marks this Node instance as
+// persistence-failed. Only the first error is kept. Callers must hold
+// n.mu.
+func (n *Node) failPersistenceLocked(err error) {
+	if n.persistFailed {
+		return
+	}
+	n.persistFailed = true
+	n.persistErr = err
 }
 
 // lastLogIndexLocked, lastLogTermLocked, and logTermAtLocked all rely on
@@ -383,13 +465,17 @@ func (n *Node) logIsUpToDateLocked(candidateLastTerm, candidateLastIndex uint64)
 }
 
 // becomeFollowerLocked steps down to Follower for a newly observed,
-// strictly higher term, resetting votedFor for the new term. Callers
-// must hold n.mu and must only call this when term > n.currentTerm.
-func (n *Node) becomeFollowerLocked(term uint64) {
+// strictly higher term, resetting votedFor for the new term, and
+// reports whether that change was durably saved. Callers must hold n.mu
+// and must only call this when term > n.currentTerm. If this returns
+// false, the caller must not treat the term adoption as safe to act on
+// externally (e.g. must not proceed to evaluate/grant a vote under the
+// new term) — the node is now permanently fail-stopped regardless.
+func (n *Node) becomeFollowerLocked(term uint64) bool {
 	n.stepDownToFollowerLocked()
 	n.currentTerm = term
 	n.votedFor = ""
-	n.persistStateLocked()
+	return n.persistStateLocked()
 }
 
 // stepDownToFollowerLocked demotes the node to Follower without changing
@@ -406,9 +492,12 @@ func (n *Node) stepDownToFollowerLocked() {
 
 // becomeLeaderLocked transitions to Leader for the current term,
 // reinitializes nextIndex/matchIndex for every peer, and starts the
-// replication loop. Callers must hold n.mu.
+// replication loop. Callers must hold n.mu. A defensive check here (on
+// top of callers checking persistStateLocked's own result before
+// reaching this) ensures no path can ever make a persistence-failed node
+// a leader.
 func (n *Node) becomeLeaderLocked() {
-	if n.stopped {
+	if n.stopped || !n.persistenceOKLocked() {
 		return
 	}
 	n.role = Leader
@@ -437,11 +526,22 @@ func (n *Node) becomeLeaderLocked() {
 // from every peer concurrently.
 func (n *Node) startElection() {
 	n.mu.Lock()
+	if !n.persistenceOKLocked() {
+		n.mu.Unlock()
+		return
+	}
 	n.currentTerm++
 	term := n.currentTerm
 	n.role = Candidate
 	n.votedFor = n.id
-	n.persistStateLocked()
+	if !n.persistStateLocked() {
+		// The term increment and self-vote could not be durably saved.
+		// Do not campaign on them: no RequestVote is sent, and (per the
+		// node-wide fail-stop this just triggered) nothing else will
+		// ever treat this candidacy as valid either.
+		n.mu.Unlock()
+		return
+	}
 	lastLogIndex := n.lastLogIndexLocked()
 	lastLogTerm := n.lastLogTermLocked()
 	peers := append([]string(nil), n.peers...)
@@ -521,7 +621,7 @@ func (n *Node) runReplicationLoop(term uint64, stopCh chan struct{}) {
 // (possibly none, i.e. a pure heartbeat).
 func (n *Node) replicate(term uint64) {
 	n.mu.Lock()
-	if n.role != Leader || n.currentTerm != term {
+	if n.role != Leader || n.currentTerm != term || !n.persistenceOKLocked() {
 		n.mu.Unlock()
 		return
 	}
@@ -537,7 +637,7 @@ func (n *Node) replicate(term uint64) {
 
 func (n *Node) replicateToPeer(term uint64, peer, leaderID string, leaderCommit uint64) {
 	n.mu.Lock()
-	if n.role != Leader || n.currentTerm != term {
+	if n.role != Leader || n.currentTerm != term || !n.persistenceOKLocked() {
 		n.mu.Unlock()
 		return
 	}
@@ -573,7 +673,7 @@ func (n *Node) replicateToPeer(term uint64, peer, leaderID string, leaderCommit 
 		n.signalElectionReset()
 		return
 	}
-	if n.role != Leader || n.currentTerm != term {
+	if n.role != Leader || n.currentTerm != term || !n.persistenceOKLocked() {
 		n.mu.Unlock()
 		return
 	}
@@ -610,7 +710,7 @@ func (n *Node) replicateToPeer(term uint64, peer, leaderID string, leaderCommit 
 // the Log Matching Property guarantees anything below a replicated N is
 // already identical across that same majority. Callers must hold n.mu.
 func (n *Node) maybeAdvanceCommitIndexLocked() {
-	if n.role != Leader {
+	if n.role != Leader || !n.persistenceOKLocked() {
 		return
 	}
 	majority := n.majorityLocked()
@@ -637,6 +737,14 @@ func (n *Node) maybeAdvanceCommitIndexLocked() {
 func (n *Node) HandleRequestVote(args *RequestVoteArgs) *RequestVoteReply {
 	n.mu.Lock()
 
+	if !n.persistenceOKLocked() {
+		// Fail-stopped: never grant a vote we can no longer durably
+		// record, regardless of what term/log evaluation would say.
+		reply := &RequestVoteReply{Term: n.currentTerm, VoteGranted: false}
+		n.mu.Unlock()
+		return reply
+	}
+
 	if args.Term < n.currentTerm {
 		reply := &RequestVoteReply{Term: n.currentTerm, VoteGranted: false}
 		n.mu.Unlock()
@@ -644,14 +752,23 @@ func (n *Node) HandleRequestVote(args *RequestVoteArgs) *RequestVoteReply {
 	}
 
 	if args.Term > n.currentTerm {
-		n.becomeFollowerLocked(args.Term)
+		if !n.becomeFollowerLocked(args.Term) {
+			// Could not durably adopt the higher term: do not evaluate
+			// or grant a vote under it.
+			reply := &RequestVoteReply{Term: n.currentTerm, VoteGranted: false}
+			n.mu.Unlock()
+			return reply
+		}
 	}
 
 	grant := (n.votedFor == "" || n.votedFor == args.CandidateID) &&
 		n.logIsUpToDateLocked(args.LastLogTerm, args.LastLogIndex)
 	if grant {
 		n.votedFor = args.CandidateID
-		n.persistStateLocked()
+		if !n.persistStateLocked() {
+			// Could not durably record the vote: do not grant it.
+			grant = false
+		}
 	}
 	reply := &RequestVoteReply{Term: n.currentTerm, VoteGranted: grant}
 	n.mu.Unlock()
@@ -669,6 +786,15 @@ func (n *Node) HandleRequestVote(args *RequestVoteArgs) *RequestVoteReply {
 func (n *Node) HandleAppendEntries(args *AppendEntriesArgs) *AppendEntriesReply {
 	n.mu.Lock()
 
+	if !n.persistenceOKLocked() {
+		// Fail-stopped: never report success for state we can no longer
+		// durably record. A leader must not count this node as having
+		// replicated anything from here on.
+		reply := &AppendEntriesReply{Term: n.currentTerm, Success: false}
+		n.mu.Unlock()
+		return reply
+	}
+
 	if args.Term < n.currentTerm {
 		reply := &AppendEntriesReply{Term: n.currentTerm, Success: false}
 		n.mu.Unlock()
@@ -676,7 +802,11 @@ func (n *Node) HandleAppendEntries(args *AppendEntriesArgs) *AppendEntriesReply 
 	}
 
 	if args.Term > n.currentTerm {
-		n.becomeFollowerLocked(args.Term)
+		if !n.becomeFollowerLocked(args.Term) {
+			reply := &AppendEntriesReply{Term: n.currentTerm, Success: false}
+			n.mu.Unlock()
+			return reply
+		}
 	} else if n.role != Follower {
 		n.stepDownToFollowerLocked()
 	}
@@ -705,7 +835,14 @@ func (n *Node) HandleAppendEntries(args *AppendEntriesArgs) *AppendEntriesReply 
 	}
 	if i < len(args.Entries) {
 		n.log = append(n.log, args.Entries[i:]...)
-		n.persistStateLocked()
+		if !n.persistStateLocked() {
+			// The new/replacing entries could not be durably saved: do
+			// not report success. The leader must not count this node
+			// toward a majority for anything it just tried to send.
+			reply := &AppendEntriesReply{Term: n.currentTerm, Success: false}
+			n.mu.Unlock()
+			return reply
+		}
 	}
 
 	if args.LeaderCommit > n.commitIndex {

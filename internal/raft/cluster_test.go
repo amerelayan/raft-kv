@@ -18,6 +18,19 @@ const (
 	testRPCTimeout         = 20 * time.Millisecond
 )
 
+// mustNewNode calls NewNode and fails the test if it returns an error.
+// NewNode only fails when Persister.LoadState fails, which NoopPersister
+// (the default used by nearly every test here) never does — so this
+// just removes the same boilerplate error check from every call site.
+func mustNewNode(t *testing.T, cfg Config) *Node {
+	t.Helper()
+	n, err := NewNode(cfg)
+	if err != nil {
+		t.Fatalf("NewNode: %v", err)
+	}
+	return n
+}
+
 // newTestCluster creates n Nodes wired together over a shared in-memory
 // Network, all using small/fast timing so tests run quickly. It does not
 // start the nodes; call startAll once ready, so a test can mutate state
@@ -40,7 +53,7 @@ func newTestCluster(t *testing.T, n int) ([]*Node, *Network) {
 			}
 		}
 		transport := NewFakeTransport(network, id)
-		node := NewNode(Config{
+		node := mustNewNode(t, Config{
 			ID:                 id,
 			Peers:              peers,
 			Transport:          transport,

@@ -98,10 +98,10 @@ func TestStaleRejectionDoesNotRegressNextIndexBelowMatchIndexPlusOne(t *testing.
 	network := NewNetwork()
 
 	ct := newControlledTransport(NewFakeTransport(network, "leader"), peer)
-	leader := NewNode(Config{ID: "leader", Peers: []string{peer}, Transport: ct})
+	leader := mustNewNode(t, Config{ID: "leader", Peers: []string{peer}, Transport: ct})
 	network.Register("leader", leader)
 
-	follower := NewNode(Config{ID: peer, Peers: []string{"leader"}, Transport: NewFakeTransport(network, peer)})
+	follower := mustNewNode(t, Config{ID: peer, Peers: []string{"leader"}, Transport: NewFakeTransport(network, peer)})
 	network.Register(peer, follower)
 
 	// Follower starts with a real log up to index 8 (term 1) — this is

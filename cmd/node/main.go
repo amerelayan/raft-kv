@@ -14,6 +14,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -29,6 +30,7 @@ func main() {
 	id := flag.String("id", "", "Raft node ID; leave empty to run without Raft (Stage 1/2 behavior)")
 	raftAddr := flag.String("raft-addr", ":9100", "TCP address to listen on for Raft RPCs")
 	peers := flag.String("peers", "", "comma-separated peer list as id=raft-addr, e.g. node2=localhost:9101,node3=localhost:9102")
+	dataDir := flag.String("data-dir", "", "directory for this node's persisted Raft state (required when -id is set, e.g. ./data/node1); each node must use its own directory")
 	flag.Parse()
 
 	localStore := store.New()
@@ -40,6 +42,10 @@ func main() {
 	var raftServeErr chan error
 
 	if *id != "" {
+		if *dataDir == "" {
+			log.Fatalf("-data-dir is required when -id is set (each node needs its own directory for persisted Raft state)")
+		}
+
 		peerAddrs, err := parsePeers(*peers)
 		if err != nil {
 			log.Fatalf("peers: %v", err)
@@ -58,12 +64,22 @@ func main() {
 		}
 		addrs[*id] = raftLn.Addr().String()
 
+		statePath := filepath.Join(*dataDir, "raft-state.json")
+		persister, err := raft.NewFilePersister(statePath)
+		if err != nil {
+			log.Fatalf("persister: %v", err)
+		}
+
 		raftTransport = raft.NewTCPTransport(*id, addrs)
-		raftNode = raft.NewNode(raft.Config{
+		raftNode, err = raft.NewNode(raft.Config{
 			ID:        *id,
 			Peers:     peerIDs,
 			Transport: raftTransport,
+			Persister: persister,
 		})
+		if err != nil {
+			log.Fatalf("raft node: %v", err)
+		}
 		raftTransport.SetHandler(raftNode)
 
 		raftServeErr = make(chan error, 1)

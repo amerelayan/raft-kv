@@ -95,7 +95,7 @@ func TestEntryNotCommittedWithoutMajority(t *testing.T) {
 // 5. Follower rejects AppendEntries with wrong PrevLogIndex.
 func TestFollowerRejectsWrongPrevLogIndex(t *testing.T) {
 	network := NewNetwork()
-	n := NewNode(Config{ID: "a", Peers: []string{"b"}, Transport: NewFakeTransport(network, "a")})
+	n := mustNewNode(t, Config{ID: "a", Peers: []string{"b"}, Transport: NewFakeTransport(network, "a")})
 	network.Register("a", n)
 
 	// n's log only has the sentinel (index 0); PrevLogIndex=5 can't exist.
@@ -113,7 +113,7 @@ func TestFollowerRejectsWrongPrevLogIndex(t *testing.T) {
 // 6. Follower rejects AppendEntries with wrong PrevLogTerm.
 func TestFollowerRejectsWrongPrevLogTerm(t *testing.T) {
 	network := NewNetwork()
-	n := NewNode(Config{ID: "a", Peers: []string{"b"}, Transport: NewFakeTransport(network, "a")})
+	n := mustNewNode(t, Config{ID: "a", Peers: []string{"b"}, Transport: NewFakeTransport(network, "a")})
 	network.Register("a", n)
 
 	ok1 := n.HandleAppendEntries(&AppendEntriesArgs{
@@ -136,7 +136,7 @@ func TestFollowerRejectsWrongPrevLogTerm(t *testing.T) {
 // 7. Conflicting follower log entries are overwritten correctly.
 func TestConflictingEntriesAreOverwritten(t *testing.T) {
 	network := NewNetwork()
-	n := NewNode(Config{ID: "a", Peers: []string{"b"}, Transport: NewFakeTransport(network, "a")})
+	n := mustNewNode(t, Config{ID: "a", Peers: []string{"b"}, Transport: NewFakeTransport(network, "a")})
 	network.Register("a", n)
 
 	r := n.HandleAppendEntries(&AppendEntriesArgs{
@@ -265,7 +265,7 @@ func TestLeaderBacktracksNextIndexAfterRejection(t *testing.T) {
 // 9. Follower commitIndex advances from LeaderCommit.
 func TestFollowerCommitIndexAdvancesFromLeaderCommit(t *testing.T) {
 	network := NewNetwork()
-	n := NewNode(Config{ID: "a", Peers: []string{"b"}, Transport: NewFakeTransport(network, "a")})
+	n := mustNewNode(t, Config{ID: "a", Peers: []string{"b"}, Transport: NewFakeTransport(network, "a")})
 	network.Register("a", n)
 
 	reply := n.HandleAppendEntries(&AppendEntriesArgs{
@@ -301,7 +301,7 @@ func TestFollowerCommitIndexAdvancesFromLeaderCommit(t *testing.T) {
 // 10. Committed entries are applied exactly once and in order.
 func TestCommittedEntriesAppliedOnceInOrder(t *testing.T) {
 	network := NewNetwork()
-	n := NewNode(Config{ID: "a", Peers: []string{"b"}, Transport: NewFakeTransport(network, "a")})
+	n := mustNewNode(t, Config{ID: "a", Peers: []string{"b"}, Transport: NewFakeTransport(network, "a")})
 	network.Register("a", n)
 	n.Start()
 	t.Cleanup(n.Stop)
@@ -344,7 +344,7 @@ func TestCommittedEntriesAppliedOnceInOrder(t *testing.T) {
 // 11. RequestVote rejects a candidate with a stale log.
 func TestRequestVoteRejectsStaleLog(t *testing.T) {
 	network := NewNetwork()
-	n := NewNode(Config{ID: "a", Peers: []string{"b"}, Transport: NewFakeTransport(network, "a")})
+	n := mustNewNode(t, Config{ID: "a", Peers: []string{"b"}, Transport: NewFakeTransport(network, "a")})
 	network.Register("a", n)
 
 	r := n.HandleAppendEntries(&AppendEntriesArgs{
@@ -382,7 +382,7 @@ func TestRequestVoteRejectsStaleLog(t *testing.T) {
 // voting rules allow.
 func TestRequestVoteAcceptsUpToDateLog(t *testing.T) {
 	network := NewNetwork()
-	n := NewNode(Config{ID: "a", Peers: []string{"b"}, Transport: NewFakeTransport(network, "a")})
+	n := mustNewNode(t, Config{ID: "a", Peers: []string{"b"}, Transport: NewFakeTransport(network, "a")})
 	network.Register("a", n)
 
 	r := n.HandleAppendEntries(&AppendEntriesArgs{

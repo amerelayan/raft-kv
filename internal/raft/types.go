@@ -90,4 +90,11 @@ type State struct {
 	VotedFor    string
 	CommitIndex uint64
 	LastApplied uint64
+	// PersistenceError is non-nil once this Node instance has
+	// permanently fail-stopped after a Persister.SaveState call failed.
+	// Once set, it never changes or clears for the life of this Node —
+	// recovery requires constructing a new Node (which reloads the last
+	// state that was actually saved successfully). See Node's doc
+	// comment for the full fail-stop behavior this implies.
+	PersistenceError error
 }
