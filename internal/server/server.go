@@ -7,7 +7,6 @@ package server
 
 import (
 	"bufio"
-	"errors"
 	"net"
 	"sync"
 )
@@ -52,8 +51,14 @@ func New(kv KV) *Server {
 func (s *Server) Serve(ln net.Listener) error {
 	s.mu.Lock()
 	if s.closed {
+		// Shutdown ran before Serve started (e.g. Serve was launched in a
+		// goroutine and Shutdown was called immediately after). ln was
+		// never handed to Shutdown, so nothing has closed it yet — do
+		// that here, and report the same nil-means-shutdown result Serve
+		// would give if Shutdown had raced in after the loop started.
 		s.mu.Unlock()
-		return errors.New("server: Serve called after Shutdown")
+		ln.Close()
+		return nil
 	}
 	s.listener = ln
 	s.mu.Unlock()
