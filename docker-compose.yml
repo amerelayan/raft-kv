@@ -1,0 +1,58 @@
+# Starts a real 3-node raft-kv cluster using Docker Compose's built-in
+# service-name DNS for peer addressing (each node reaches its peers as
+# node2:9100 / node3:9100, etc., instead of localhost ports). This is the
+# same binary and flags as running the nodes by hand (see README); Compose
+# just wires up the network and gives each node its own named volume for
+# persisted Raft state.
+#
+# Usage:
+#   docker compose up --build
+#   nc localhost 9001   # talk to node1 (node2: 9002, node3: 9003)
+#
+# Stop and wipe persisted state:
+#   docker compose down -v
+
+services:
+  node1:
+    build: .
+    command:
+      - -id=node1
+      - -addr=:9000
+      - -raft-addr=:9100
+      - -peers=node2=node2:9100,node3=node3:9100
+      - -data-dir=/data
+    ports:
+      - "9001:9000"
+    volumes:
+      - node1-data:/data
+
+  node2:
+    build: .
+    command:
+      - -id=node2
+      - -addr=:9000
+      - -raft-addr=:9100
+      - -peers=node1=node1:9100,node3=node3:9100
+      - -data-dir=/data
+    ports:
+      - "9002:9000"
+    volumes:
+      - node2-data:/data
+
+  node3:
+    build: .
+    command:
+      - -id=node3
+      - -addr=:9000
+      - -raft-addr=:9100
+      - -peers=node1=node1:9100,node2=node2:9100
+      - -data-dir=/data
+    ports:
+      - "9003:9000"
+    volumes:
+      - node3-data:/data
+
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:

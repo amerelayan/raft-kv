@@ -6,8 +6,9 @@
 // A Node that fails to durably persist a required state change
 // fail-stops permanently (see Node's doc comment) rather than continue
 // operating on state that was never actually saved. It does not
-// implement client write routing, snapshots, log compaction, or dynamic
-// membership — those are later stages.
+// implement snapshots, log compaction, or dynamic membership; see the
+// README's Known Limitations section. Client write routing lives one
+// layer up, in package raftkv.
 package raft
 
 import (

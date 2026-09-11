@@ -1,9 +1,9 @@
 // Command node starts a single key-value store node listening for client
 // connections over TCP, optionally participating in Raft consensus with
-// other nodes over a separate TCP port. When Raft is enabled, client
-// writes are replicated via Raft before being acknowledged; when it
-// isn't, the node behaves exactly as it did in Stage 1/2 (a standalone,
-// in-memory, single-node store).
+// other nodes over a separate TCP port. When Raft is enabled (-id set),
+// client writes are replicated via Raft before being acknowledged; when
+// it isn't, the node runs as a standalone, in-memory, single-node store
+// with no consensus or persistence involved.
 package main
 
 import (
@@ -27,7 +27,7 @@ import (
 
 func main() {
 	addr := flag.String("addr", ":9000", "TCP address to listen on for client (KV) connections")
-	id := flag.String("id", "", "Raft node ID; leave empty to run without Raft (Stage 1/2 behavior)")
+	id := flag.String("id", "", "Raft node ID; leave empty to run as a standalone, non-replicated node")
 	raftAddr := flag.String("raft-addr", ":9100", "TCP address to listen on for Raft RPCs")
 	peers := flag.String("peers", "", "comma-separated peer list as id=raft-addr, e.g. node2=localhost:9101,node3=localhost:9102")
 	dataDir := flag.String("data-dir", "", "directory for this node's persisted Raft state (required when -id is set, e.g. ./data/node1); each node must use its own directory")

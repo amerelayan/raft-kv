@@ -18,9 +18,10 @@ func New() *Store {
 
 // Put sets the value for a key, creating or overwriting it. The error
 // return exists to satisfy server.KV: a local, single-node store cannot
-// fail a write, so it is always nil here. A future Raft-backed
-// implementation of the same interface can fail a write (not leader,
-// proposal timeout, no quorum) without changing this signature.
+// fail a write, so it is always nil here. internal/raftkv.RaftKV
+// satisfies the same interface and does fail a write (not leader,
+// proposal timeout, lost leadership) without either interface needing to
+// change.
 func (s *Store) Put(key, value string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

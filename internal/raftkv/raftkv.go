@@ -65,10 +65,10 @@ type Config struct {
 // window after it has actually lost leadership but before it has
 // discovered that (e.g. mid-partition, before its next election
 // timeout fires). That window is bounded by the cluster's election
-// timeout, but it is not eliminated. A future stage that needs
-// linearizable reads under partition would need ReadIndex or leases;
-// this stage deliberately prioritizes correctness-of-writes and
-// simplicity over that.
+// timeout, but it is not eliminated. Linearizable reads under
+// partition would require ReadIndex or leases; this implementation
+// deliberately prioritizes correctness-of-writes and simplicity over
+// that (see the README's Known Limitations section).
 type RaftKV struct {
 	node  *raft.Node
 	store localStore
