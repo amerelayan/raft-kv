@@ -1,6 +1,9 @@
 // Command node starts a single key-value store node listening for client
-// connections over TCP, optionally participating in Raft leader election
-// with other nodes over a separate TCP port.
+// connections over TCP, optionally participating in Raft consensus with
+// other nodes over a separate TCP port. When Raft is enabled, client
+// writes are replicated via Raft before being acknowledged; when it
+// isn't, the node behaves exactly as it did in Stage 1/2 (a standalone,
+// in-memory, single-node store).
 package main
 
 import (
@@ -16,6 +19,7 @@ import (
 	"time"
 
 	"raftkv/internal/raft"
+	"raftkv/internal/raftkv"
 	"raftkv/internal/server"
 	"raftkv/internal/store"
 )
@@ -27,22 +31,12 @@ func main() {
 	peers := flag.String("peers", "", "comma-separated peer list as id=raft-addr, e.g. node2=localhost:9101,node3=localhost:9102")
 	flag.Parse()
 
-	ln, err := net.Listen("tcp", *addr)
-	if err != nil {
-		log.Fatalf("listen on %s: %v", *addr, err)
-	}
+	localStore := store.New()
 
-	kv := store.New()
-	srv := server.New(kv)
-
-	serveErr := make(chan error, 1)
-	go func() {
-		serveErr <- srv.Serve(ln)
-	}()
-	log.Printf("node listening for clients on %s", ln.Addr())
-
+	var kv server.KV = localStore
 	var raftNode *raft.Node
 	var raftTransport *raft.TCPTransport
+	var raftKV *raftkv.RaftKV
 	var raftServeErr chan error
 
 	if *id != "" {
@@ -78,9 +72,25 @@ func main() {
 		}()
 		log.Printf("raft node %q listening for peers on %s (peers: %v)", *id, raftLn.Addr(), peerIDs)
 
+		raftKV = raftkv.New(raftkv.Config{Node: raftNode, Store: localStore})
+		kv = raftKV
+
 		raftNode.Start()
+		raftKV.Start()
 		go logRaftStateChanges(raftNode)
 	}
+
+	ln, err := net.Listen("tcp", *addr)
+	if err != nil {
+		log.Fatalf("listen on %s: %v", *addr, err)
+	}
+
+	srv := server.New(kv)
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- srv.Serve(ln)
+	}()
+	log.Printf("node listening for clients on %s", ln.Addr())
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -88,6 +98,12 @@ func main() {
 	select {
 	case <-ctx.Done():
 		log.Println("shutting down...")
+		// RaftKV first, so any in-flight client write unblocks
+		// immediately via its own stop signal rather than srv.Shutdown()
+		// blocking on that write's proposal timeout.
+		if raftKV != nil {
+			raftKV.Stop()
+		}
 		if raftNode != nil {
 			raftNode.Stop()
 			raftTransport.Shutdown()
